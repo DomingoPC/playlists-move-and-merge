@@ -8,14 +8,34 @@ from collections.abc import Sequence
 import utils as u
 
 #region Create_CSV_Backup
+def get_raw_tracks(sp: spotipy.Spotify, url: str, offset: int, is_liked_songs: bool):
+    if is_liked_songs:
+        return sp.current_user_saved_tracks(
+            limit       =   100,
+            offset      =   offset,
+            fields      =   "items(added_at,track(id,name,artists(name),album(name),duration_ms,external_ids(isrc))),next"
+        )
+    else:
+        return sp.playlist_tracks(
+            playlist_id =   url,
+            limit       =   100,
+            offset      =   offset,
+            fields      =   "items(added_at,track(id,name,artists(name),album(name),duration_ms,external_ids(isrc))),next"
+        )
+
 def get_playlist_tracks(sp: spotipy.Spotify, playlist_url: str) -> pd.DataFrame:
     """Extract tracks from a url (only read permissions needed)"""
     playlist_name = sp.playlist(playlist_id = playlist_url, fields = "name")["name"]
 
+    is_liked_songs = False
+    if playlist_url == "https://open.spotify.com/collection/tracks":
+        is_liked_songs = True
+
     # Create a list accounting for the offset
     rows, offset = [], 0
     while True:
-            
+
+        raw_tracks = get_raw_tracks(sp, playlist_url, offset, is_liked_songs)  
         raw_tracks  =   sp.playlist_tracks(
             playlist_id =   playlist_url,
             limit       =   100,
@@ -58,7 +78,7 @@ def create_csv_backup(sp: spotipy.Spotify, urls: tuple[str, ...]) -> None:
     concat_flag: bool = False
     for url in urls:
         playlist_data = get_playlist_tracks(sp, url)
-        
+            
         if concat_flag:
             data = pd.concat([data, playlist_data], axis = 0)
         else:
@@ -70,6 +90,49 @@ def create_csv_backup(sp: spotipy.Spotify, urls: tuple[str, ...]) -> None:
 
 
 #region Upload_CSV_Backup
+def get_users_playlists(sp: spotipy.Spotify) -> list[str]:
+    names: list[str] = []
+    playlists = sp.current_user_playlists()
+    while playlists:
+        for i, playlist in enumerate(playlists['items']):
+            names.append(playlist["name"])
+        if playlists['next']:
+            playlists = sp.next(playlists)
+        else:
+            playlists = None
+
+    return names
+
+
+
+def upload_csv(sp: spotipy.Spotify, playlist_name: str | None, csv_path: str) -> None:
+    csv_path = Path(csv_path)
+
+    if not playlist_name or len(playlist_name.strp()) == 0:
+        playlist_name = f"Backup_{datetime.now().strftime("%d_%m_%Y")}"
+
+    # Create new playlist and check name duplicates
+    existing_names = get_users_playlists(sp)
+    
+    while playlist_name in existing_names:
+        playlist_name = playlist_name + "_1"
+
+    newPlaylist = sp.user_playlist_create(
+        user = sp.current_user()["id"],
+        name = playlist_name,
+        public = False,
+        description = f"Generated from CSV Backup. Upload: {datetime.now().strftime("%d-%m-%Y, %H:%M:%S")}"
+    )
+
+    # Load tracks and extract id
+    tracks_id = u.load_tracks_from_csv(csv_path, ORIGIN)
+
+    # Upload tracks to new playlist
+    sp.user_playlist_add_tracks(
+        user = sp.current_user()["id"],
+        playlist_id = newPlaylist["id"],
+        tracks = tracks_id
+    )
 
 #endregion
 
@@ -95,43 +158,50 @@ def get_credentials(scope: str) -> spotipy.Spotify:
     return sp
 
 
-def spotify_handler(SAVE_URL: str | Sequence[str] | None = None, UPLOAD_URL: str = None):
+def spotify_handler(SAVE_URL: str | Sequence[str] | None = None, UPLOAD_NAME: str = None, BACKUP_PATH: str | None = None):
     """"""
-    
-    if SAVE_URL:
-        # Only read permissions
-        make_backup = True
-        urls = u.as_tuple(SAVE_URL)
-        scope = "playlist-read-private playlist-read-collaborative user-library-read" # user-library-read : liked songs
-    elif UPLOAD_URL:
-        # Write permissions
-        make_backup = False
-        scope = "playlist-modify-private playlist-modify-public"
-    else:
-        # No action possible
-        raise ValueError("Both SAVE_URL and UPLOAD_URL are empty, so no action can be taken")
-    
-    sp = get_credentials(scope)
+    scopes = {
+        "backup": {"flag": False, "info": "", "permissions": ""},
+        "upload": {"flag": False, "info": "", "permissions": ""}
+    }
 
-    if make_backup:
+    if SAVE_URL:
+        scope = "playlist-read-private playlist-read-collaborative user-library-read" # user-library-read : liked songs
+        urls = u.as_tuple(SAVE_URL)
+
+        sp = get_credentials(scope) # Only read permissions
         create_csv_backup(sp, urls)
-    else:
-        pass
+    
+    if BACKUP_PATH:
+        scope = "playlist-modify-private playlist-modify-public playlist-read-private playlist-read-collaborative"
+
+        sp = get_credentials(scope) # Write and read permissions
+        upload_csv(sp, UPLOAD_NAME, BACKUP_PATH)
+    
+    if not SAVE_URL and not UPLOAD_NAME:
+        # No action possible
+        raise ValueError("Both SAVE_URL and UPLOAD_NAME are empty, so no action can be taken")
+    
 #endregion
 
 #region Execution_Parameters
 if __name__ == "__main__":
     ORIGIN: str = "spotify" # spotify or ytmusic
+    
+    # Backup
     SAVE_URL: str | Sequence[str] | None = [
         r"https://open.spotify.com/playlist/03fpAdWRT8FuAXpJ4Zgmqr",
         r"https://open.spotify.com/playlist/7tWw42qiQ5HONQFGXxx5o5"
     ]
-    UPLOAD_URL: str | None = None
+    
+    # Upload Backup to Spotify
+    UPLOAD_NAME: str | None = None
+    BACKUP_PATH: str = r"exports\spotify_2025-08-26_223541_domnes42.csv"
 
     if ORIGIN.lower() == "spotify":
-        spotify_handler(SAVE_URL, UPLOAD_URL)
+        spotify_handler(SAVE_URL, UPLOAD_NAME, BACKUP_PATH)
     elif ORIGIN.lower() == "ytmusic":
         pass
     else:
-        raise RuntimeError("Unknown origin selected: {ORIGIN}")
+        raise RuntimeError(f"Unknown origin selected: {ORIGIN}")
 #endregion
