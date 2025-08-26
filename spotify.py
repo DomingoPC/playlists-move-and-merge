@@ -120,10 +120,12 @@ def upload_csv(sp: spotipy.Spotify, playlist_name: str | None, csv_path: str) ->
     newPlaylist = sp.user_playlist_create(
         user = sp.current_user()["id"],
         name = playlist_name,
-        public = False,
-        description = f"Generated from CSV Backup. Upload: {datetime.now().strftime("%d-%m-%Y, %H:%M:%S")}"
+        public = False, # inconsistent (?)
+        description = f"Generated from CSV Backup. Uploaded: {datetime.now().strftime("%d-%m-%Y, %H:%M:%S")}"
     )
-
+    
+    sp.user_playlist_change_details(sp.current_user()["id"], newPlaylist["id"], public=False)
+    
     # Load tracks and extract id
     tracks_id = u.load_tracks_from_csv(csv_path, ORIGIN)
 
@@ -160,22 +162,14 @@ def get_credentials(scope: str) -> spotipy.Spotify:
 
 def spotify_handler(SAVE_URL: str | Sequence[str] | None = None, UPLOAD_NAME: str = None, BACKUP_PATH: str | None = None):
     """"""
-    scopes = {
-        "backup": {"flag": False, "info": "", "permissions": ""},
-        "upload": {"flag": False, "info": "", "permissions": ""}
-    }
+    scope = "playlist-modify-private playlist-modify-public playlist-read-private playlist-read-collaborative user-library-read" # user-library-read : liked songs
+    sp = get_credentials(scope)
 
     if SAVE_URL:
-        scope = "playlist-read-private playlist-read-collaborative user-library-read" # user-library-read : liked songs
         urls = u.as_tuple(SAVE_URL)
-
-        sp = get_credentials(scope) # Only read permissions
         create_csv_backup(sp, urls)
     
     if BACKUP_PATH:
-        scope = "playlist-modify-private playlist-modify-public playlist-read-private playlist-read-collaborative"
-
-        sp = get_credentials(scope) # Write and read permissions
         upload_csv(sp, UPLOAD_NAME, BACKUP_PATH)
     
     if not SAVE_URL and not UPLOAD_NAME:
